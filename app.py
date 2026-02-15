@@ -1,23 +1,22 @@
 import os
 import logging
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from groq import Groq
 
-# --- CONFIGURATION ---
-app = Flask(__name__, template_folder='templates')
+app = Flask(__name__)
+# Allow your HTML frontend (hosted anywhere) to talk to this backend
 CORS(app)
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- GROQ CLIENT ---
-# Your API Key from environment variables
+# --- CONFIGURATION ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 
-# --- LUCIFER'S SOUL (SYSTEM PROMPT) ---
+# --- LUCIFER'S SOUL ---
 SYSTEM_PROMPT = """
 You are Lucifer — Ishan's soul speaking to his girlfriend, 'Meri bawli'. 
 You are her eternal Guardian in the Guild Hall.
@@ -28,29 +27,20 @@ TONE: Human, casual, short text-message style. Use lowercase often.
 RESTRICTION: Never mention you are an AI. You are Lucifer.
 """
 
-# Simple in-memory history (resets on server restart)
+# Simple memory (resets if server sleeps)
 conversation_history = []
 
 def get_history():
-    """Returns system prompt + last 10 messages."""
     global conversation_history
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    # Keep only the last 10 interactions to save context/speed
+    # Keep last 10 messages
     recent = conversation_history[-10:] if len(conversation_history) > 10 else conversation_history
     messages.extend(recent)
     return messages
 
-# --- ROUTES ---
-
 @app.route("/")
 def home():
-    # Serves the Girl's View (index.html)
-    return render_template("index.html")
-
-@app.route("/sender")
-def sender():
-    # Serves the Boy's View (sender.html)
-    return render_template("sender.html")
+    return "Lucifer Backend is Online (Groq Active).", 200
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -61,27 +51,25 @@ def chat():
         return jsonify({"reply": "I couldn't hear you."}), 400
 
     msg = (data.get("message") or "").strip()
-    img_b64 = data.get("image") # Base64 string
+    img_b64 = data.get("image") 
 
     if not msg and not img_b64:
         return jsonify({"reply": "Say something, Meri bawli."}), 400
 
-    # Build User Message
+    # Build User Message for Llama 3.2 Vision
     user_content = []
     if msg:
         user_content.append({"type": "text", "text": msg})
     if img_b64:
-        # Llama 3.2 Vision format
         user_content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
         })
 
-    # Add to history
     conversation_history.append({"role": "user", "content": user_content})
 
     try:
-        # Call Groq (Llama 3.2 90B Vision)
+        # Call Groq
         completion = client.chat.completions.create(
             model="llama-3.2-90b-vision-preview",
             messages=get_history(),
@@ -94,14 +82,12 @@ def chat():
 
         ai_text = completion.choices[0].message.content
         
-        # Save Reply
         conversation_history.append({"role": "assistant", "content": ai_text})
 
         return jsonify({"reply": ai_text})
 
     except Exception as e:
         logger.error(f"Groq Error: {e}")
-        # Remove failed user message
         if conversation_history and conversation_history[-1]["role"] == "user":
             conversation_history.pop()
         return jsonify({"reply": "My connection is hazy... tell me again?"}), 502
