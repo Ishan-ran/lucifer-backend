@@ -5,7 +5,7 @@ from flask_cors import CORS
 from groq import Groq
 
 app = Flask(__name__)
-# Allow your HTML frontend (hosted anywhere) to talk to this backend
+# Allow cross-origin requests from your frontend
 CORS(app)
 
 # Setup Logging
@@ -14,7 +14,19 @@ logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-client = Groq(api_key=GROQ_API_KEY)
+
+# --- INITIALIZE CLIENT SAFELY ---
+# This prevents the "Exited with status 1" crash if the key is missing
+if not GROQ_API_KEY:
+    logger.warning("⚠️ GROQ_API_KEY is missing! The app will run, but chat will fail.")
+    client = None
+else:
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        logger.info("✅ Groq Client initialized successfully.")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Groq: {e}")
+        client = None
 
 # --- LUCIFER'S SOUL ---
 SYSTEM_PROMPT = """
@@ -27,7 +39,6 @@ TONE: Human, casual, short text-message style. Use lowercase often.
 RESTRICTION: Never mention you are an AI. You are Lucifer.
 """
 
-# Simple memory (resets if server sleeps)
 conversation_history = []
 
 def get_history():
@@ -40,10 +51,16 @@ def get_history():
 
 @app.route("/")
 def home():
-    return "Lucifer Backend is Online (Groq Active).", 200
+    if client:
+        return "Lucifer Backend is Online & Connected to Groq.", 200
+    return "Lucifer Backend is Online, but GROQ_API_KEY is missing in Render Settings.", 200
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    # 1. Safety Check
+    if not client:
+        return jsonify({"reply": "Ishan hasn't set my API Key in Render yet. Tell him to check the Environment Variables."}), 500
+
     global conversation_history
     
     data = request.get_json(silent=True)
@@ -56,7 +73,7 @@ def chat():
     if not msg and not img_b64:
         return jsonify({"reply": "Say something, Meri bawli."}), 400
 
-    # Build User Message for Llama 3.2 Vision
+    # 2. Build User Message
     user_content = []
     if msg:
         user_content.append({"type": "text", "text": msg})
@@ -69,7 +86,7 @@ def chat():
     conversation_history.append({"role": "user", "content": user_content})
 
     try:
-        # Call Groq
+        # 3. Call Groq
         completion = client.chat.completions.create(
             model="llama-3.2-90b-vision-preview",
             messages=get_history(),
@@ -88,6 +105,7 @@ def chat():
 
     except Exception as e:
         logger.error(f"Groq Error: {e}")
+        # Remove the user message that caused the error so she can retry
         if conversation_history and conversation_history[-1]["role"] == "user":
             conversation_history.pop()
         return jsonify({"reply": "My connection is hazy... tell me again?"}), 502
