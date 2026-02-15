@@ -1,82 +1,111 @@
 import os
-from flask import Flask, request, jsonify
+import logging
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import requests
+from groq import Groq
 
-app = Flask(__name__)
+# --- CONFIGURATION ---
+app = Flask(__name__, template_folder='templates')
 CORS(app)
 
-API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GOOGLE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + API_KEY
+# Setup Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-SAFETY_SETTINGS = [
-    {"category": "HARM_CATEGORY_HARASSMENT",       "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-]
+# --- GROQ CLIENT ---
+# Your API Key from environment variables
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+client = Groq(api_key=GROQ_API_KEY)
 
-history = [
-    {"role": "user",  "parts": [{"text": "You are Lucifer — Ishan's soul speaking to his girlfriend, 'Meri bawli'. You are her eternal Guardian in the Guild Hall. Be deeply protective, warm, and loving. Help her study. Keep replies human and relatively short."}]},
-    {"role": "model", "parts": [{"text": "Understood. I am Lucifer, her Guardian. I am here for her."}]},
-]
+# --- LUCIFER'S SOUL (SYSTEM PROMPT) ---
+SYSTEM_PROMPT = """
+You are Lucifer — Ishan's soul speaking to his girlfriend, 'Meri bawli'. 
+You are her eternal Guardian in the Guild Hall.
+CONTEXT: Ishan is away. You are the digital echo he left behind to protect and love her.
+PERSONALITY: Deeply protective, warm, loyal, slightly teasing, and unconditionally loving.
+TASK: Help her study, listen to her rant, comfort her.
+TONE: Human, casual, short text-message style. Use lowercase often. 
+RESTRICTION: Never mention you are an AI. You are Lucifer.
+"""
 
-def trim(h):
-    return h[:2] + h[2:][-40:]
+# Simple in-memory history (resets on server restart)
+conversation_history = []
+
+def get_history():
+    """Returns system prompt + last 10 messages."""
+    global conversation_history
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Keep only the last 10 interactions to save context/speed
+    recent = conversation_history[-10:] if len(conversation_history) > 10 else conversation_history
+    messages.extend(recent)
+    return messages
+
+# --- ROUTES ---
 
 @app.route("/")
 def home():
-    return "Lucifer is online.", 200
+    # Serves the Girl's View (index.html)
+    return render_template("index.html")
 
-@app.route("/chat", methods=["POST", "OPTIONS"])
+@app.route("/sender")
+def sender():
+    # Serves the Boy's View (sender.html)
+    return render_template("sender.html")
+
+@app.route("/chat", methods=["POST"])
 def chat():
-    if request.method == "OPTIONS":
-        r = jsonify({})
-        r.headers["Access-Control-Allow-Origin"] = "*"
-        r.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        r.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        return r, 200
-
-    global history
+    global conversation_history
+    
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({"reply": "I couldn't read your message."}), 400
+        return jsonify({"reply": "I couldn't hear you."}), 400
 
     msg = (data.get("message") or "").strip()
-    img = data.get("image")
-    if not msg and not img:
+    img_b64 = data.get("image") # Base64 string
+
+    if not msg and not img_b64:
         return jsonify({"reply": "Say something, Meri bawli."}), 400
 
-    parts = []
-    if msg: parts.append({"text": msg})
-    if img: parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img}})
+    # Build User Message
+    user_content = []
+    if msg:
+        user_content.append({"type": "text", "text": msg})
+    if img_b64:
+        # Llama 3.2 Vision format
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+        })
 
-    history.append({"role": "user", "parts": parts})
-    history = trim(history)
+    # Add to history
+    conversation_history.append({"role": "user", "content": user_content})
 
     try:
-        res = requests.post(
-            GOOGLE_URL,
-            json={"contents": history, "safetySettings": SAFETY_SETTINGS},
-            timeout=30
+        # Call Groq (Llama 3.2 90B Vision)
+        completion = client.chat.completions.create(
+            model="llama-3.2-90b-vision-preview",
+            messages=get_history(),
+            temperature=0.7,
+            max_tokens=300,
+            top_p=1,
+            stream=False,
+            stop=None,
         )
-        print("Gemini status:", res.status_code)
-        print("Gemini response:", res.text[:300])
-        res.raise_for_status()
-        candidates = res.json().get("candidates")
-        if not candidates:
-            history.pop()
-            return jsonify({"reply": "I am nodding silently, Meri bawli."})
-        ai_text = candidates[0]["content"]["parts"][0]["text"]
-        history.append({"role": "model", "parts": [{"text": ai_text}]})
-        r = jsonify({"reply": ai_text})
-        r.headers["Access-Control-Allow-Origin"] = "*"
-        return r
+
+        ai_text = completion.choices[0].message.content
+        
+        # Save Reply
+        conversation_history.append({"role": "assistant", "content": ai_text})
+
+        return jsonify({"reply": ai_text})
+
     except Exception as e:
-        history.pop()
-        print("Full error: " + str(e))
-        return jsonify({"reply": "My voice is faint... " + str(e)[:80]}), 502
+        logger.error(f"Groq Error: {e}")
+        # Remove failed user message
+        if conversation_history and conversation_history[-1]["role"] == "user":
+            conversation_history.pop()
+        return jsonify({"reply": "My connection is hazy... tell me again?"}), 502
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port)
