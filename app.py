@@ -25,13 +25,11 @@ else:
         client = None
 
 # ── MODEL FALLBACK CHAINS ─────────────────────────────────────────────────────
-# If the first model hits a rate limit or fails, it automatically tries the next.
-
 TEXT_MODELS = [
     "llama-3.3-70b-versatile",        # Best — smart, fast, great personality
-    "llama-3.1-70b-versatile",        # Fallback 1 — still very capable
-    "mixtral-8x7b-32768",             # Fallback 2 — solid, long context
-    "llama-3.1-8b-instant",           # Fallback 3 — lightweight, always available
+    "llama-3.1-70b-versatile",        # Fallback 1
+    "mixtral-8x7b-32768",             # Fallback 2
+    "llama-3.1-8b-instant",           # Fallback 3
 ]
 
 VISION_MODELS = [
@@ -71,8 +69,8 @@ conversation_history = []
 def get_history():
     """Constructs the message history for the API call."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    # Keep only the last 15 turns to maintain context without hitting limits
-    recent = conversation_history[-15:] if len(conversation_history) > 15 else conversation_history
+    # Keep only the last 20 turns to maintain context 
+    recent = conversation_history[-20:] if len(conversation_history) > 20 else conversation_history
     messages.extend(recent)
     return messages
 
@@ -114,7 +112,6 @@ def call_with_fallback(has_image):
     raise RuntimeError("All models in fallback chain are unavailable.")
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
-
 @app.route("/")
 def home():
     status = "Online & Connected to Groq" if client else "Online, but GROQ_API_KEY is missing"
@@ -134,7 +131,6 @@ def chat():
     msg     = (data.get("message") or "").strip()
     img_b64 = data.get("image")
 
-    # Updated default response to use "My blue"
     if not msg and not img_b64:
         return jsonify({"reply": "Say something, My blue."}), 400
 
@@ -148,21 +144,15 @@ def chat():
             "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
         })
 
-    # Add to history
     conversation_history.append({"role": "user", "content": user_content})
 
     try:
-        # Generate Response
         ai_text, used_model = call_with_fallback(has_image=bool(img_b64))
-        
-        # Add AI response to history
         conversation_history.append({"role": "assistant", "content": ai_text})
-        
         return jsonify({"reply": ai_text, "model": used_model})
 
     except Exception as e:
         logger.error(f"All fallbacks failed: {e}")
-        # Remove the user message so we don't get stuck in a loop of errors
         if conversation_history and conversation_history[-1]["role"] == "user":
             conversation_history.pop()
         return jsonify({"reply": "My connection is a bit hazy right now... tell me again?"}), 502
