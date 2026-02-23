@@ -1,5 +1,6 @@
 import os
 import logging
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from groq import Groq, RateLimitError, APIStatusError
@@ -15,6 +16,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 FRONTEND_SECRET = os.environ.get("FRONTEND_SECRET")
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 GUILD_PASSWORD = os.environ.get("GUILD_PASSWORD")
+YT_API = os.environ.get("YT_API")
 
 if not GROQ_API_KEY:
     logger.warning("⚠️ GROQ_API_KEY is missing!")
@@ -97,7 +99,30 @@ def chat():
         return jsonify({"reply": ai_text, "model": used_model})
     except Exception as e:
         if conversation_history: conversation_history.pop()
+        logger.error(f"Chat Error: {e}")
         return jsonify({"reply": "My connection is hazy... try again?"}), 502
+
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    """Securely search YouTube without exposing the API key to the frontend."""
+    client_secret = request.headers.get("X-Lucifer-Secret")
+    if client_secret != FRONTEND_SECRET:
+        return jsonify({"error": "Access Denied."}), 401
+
+    data = request.get_json(silent=True) or {}
+    query = data.get("query")
+    
+    if not query or not YT_API:
+        return jsonify({"error": "Missing query or API key"}), 400
+
+    try:
+        url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q={query}&type=video&videoCategoryId=10&key={YT_API}"
+        response = requests.get(url)
+        return jsonify(response.json()), 200
+        
+    except Exception as e:
+        logger.error(f"YouTube Search Error: {e}")
+        return jsonify({"error": "Failed to fetch from YouTube"}), 502
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
