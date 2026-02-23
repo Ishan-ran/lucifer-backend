@@ -12,6 +12,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+FRONTEND_SECRET = os.environ.get("FRONTEND_SECRET") # Added the secret
 
 if not GROQ_API_KEY:
     logger.warning("⚠️ GROQ_API_KEY is missing!")
@@ -119,6 +120,12 @@ def home():
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    # 1. Security Check: Require the secret password
+    client_secret = request.headers.get("X-Lucifer-Secret")
+    if client_secret != FRONTEND_SECRET:
+        logger.warning("Unauthorized access blocked!")
+        return jsonify({"reply": "Access Denied."}), 401
+
     if not client:
         return jsonify({"reply": "Ishan hasn't set my API Key in Render yet."}), 500
 
