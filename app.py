@@ -64,10 +64,27 @@ def call_with_fallback(has_image):
 def home():
     return "Lucifer Backend is Online.", 200
 
+@app.route("/health", methods=["GET"])
+def health():
+    groq_ready = bool(GROQ_API_KEY and client is not None)
+    youtube_ready = bool(YT_API)
+    config_ready = bool(FRONTEND_SECRET and GUILD_PASSWORD)
+
+    return jsonify({
+        "status": "ok",
+        "ready": groq_ready and youtube_ready and config_ready,
+        "apis": {
+            "groq": groq_ready,
+            "youtube": youtube_ready,
+            "frontend_secret": bool(FRONTEND_SECRET),
+            "guild_password": bool(GUILD_PASSWORD)
+        }
+    }), 200
+
 @app.route("/config", methods=["POST"])
 def get_config():
     """Securely give secrets to the frontend ONLY if the password is correct."""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     if data.get("password") == GUILD_PASSWORD:
         return jsonify({
             "spotify_id": SPOTIFY_CLIENT_ID,
@@ -83,9 +100,12 @@ def chat():
         return jsonify({"reply": "Access Denied."}), 401
 
     global conversation_history
-    data = request.get_json(silent=True)
+    data = request.get_json(silent=True) or {}
     msg = (data.get("message") or "").strip()
     img_b64 = data.get("image")
+
+    if not msg and not img_b64:
+        return jsonify({"reply": "Empty message."}), 400
 
     user_content = []
     if msg: user_content.append({"type": "text", "text": msg})
@@ -117,8 +137,11 @@ def search_youtube():
 
     try:
         url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q={query}&type=video&videoCategoryId=10&key={YT_API}"
-        response = requests.get(url)
-        return jsonify(response.json()), 200
+        response = requests.get(url, timeout=15)
+        payload = response.json()
+        if response.status_code >= 400:
+            return jsonify({"error": payload.get("error", "YouTube API error")}), response.status_code
+        return jsonify(payload), 200
         
     except Exception as e:
         logger.error(f"YouTube Search Error: {e}")
