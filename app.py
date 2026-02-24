@@ -143,6 +143,9 @@ def chat():
 
     global conversation_history
     data = request.get_json(silent=True) or {}
+    if data.get("reset_context") is True:
+        conversation_history = []
+
     msg = (data.get("message") or "").strip()
     img_b64 = data.get("image")
 
@@ -163,6 +166,16 @@ def chat():
         if conversation_history: conversation_history.pop()
         logger.error(f"Chat Error: {e}")
         return jsonify({"reply": "My connection is hazy... try again?"}), 502
+
+@app.route("/clear-chat", methods=["POST"])
+def clear_chat():
+    client_secret = request.headers.get("X-Lucifer-Secret")
+    if client_secret != FRONTEND_SECRET:
+        return jsonify({"status": "unauthorized"}), 401
+
+    global conversation_history
+    conversation_history = []
+    return jsonify({"status": "cleared"}), 200
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
