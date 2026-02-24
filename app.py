@@ -1,5 +1,7 @@
 import os
 import logging
+import re
+import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -46,6 +48,43 @@ conversation_history = []
 # ── YOUTUBE RATE LIMITING ─────────────────────────────────────────────────────
 youtube_request_log = {}  # {ip: last_request_time}
 YOUTUBE_RATE_LIMIT_SECONDS = 10
+
+def fallback_youtube_search(query, limit=10):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    }
+    response = requests.get(
+        "https://www.youtube.com/results",
+        params={"search_query": query},
+        headers=headers,
+        timeout=20
+    )
+    response.raise_for_status()
+
+    html = response.text
+    ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', html)
+
+    unique_ids = []
+    seen = set()
+    for video_id in ids:
+        if video_id in seen:
+            continue
+        seen.add(video_id)
+        unique_ids.append(video_id)
+        if len(unique_ids) >= limit:
+            break
+
+    items = []
+    for video_id in unique_ids:
+        items.append({
+            "id": {"videoId": video_id},
+            "snippet": {
+                "title": f"YouTube Video ({video_id})",
+                "channelTitle": "YouTube"
+            }
+        })
+
+    return items
 
 def get_history():
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -154,7 +193,12 @@ def search_youtube():
         return jsonify({"error": "Missing query."}), 400
 
     if VideosSearch is None:
-        return jsonify({"error": "YouTube search service unavailable."}), 503
+        try:
+            items = fallback_youtube_search(query, limit=10)
+            return jsonify({"items": items}), 200
+        except Exception as fallback_error:
+            logger.error(f"YouTube fallback search error: {fallback_error}")
+            return jsonify({"error": f"YouTube search unavailable: {str(fallback_error)}"}), 503
 
     try:
         search = VideosSearch(query, limit=10)
@@ -182,8 +226,13 @@ def search_youtube():
         return jsonify({"items": items}), 200
         
     except Exception as e:
-        logger.error(f"YouTube Search Error: {e}")
-        return jsonify({"error": "Failed to search YouTube"}), 502
+        logger.error(f"YouTube Search Error (primary): {e}")
+        try:
+            items = fallback_youtube_search(query, limit=10)
+            return jsonify({"items": items}), 200
+        except Exception as fallback_error:
+            logger.error(f"YouTube Search Error (fallback): {fallback_error}")
+            return jsonify({"error": f"Failed to search YouTube: {str(fallback_error)}"}), 502
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
