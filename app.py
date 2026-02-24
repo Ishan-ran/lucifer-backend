@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from groq import Groq, RateLimitError, APIStatusError
@@ -16,7 +17,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 FRONTEND_SECRET = os.environ.get("FRONTEND_SECRET")
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 GUILD_PASSWORD = os.environ.get("GUILD_PASSWORD")
-YT_API = os.environ.get("YT_API")
+YT_API = os.environ.get("Youtube_api")
 
 if not GROQ_API_KEY:
     logger.warning("⚠️ GROQ_API_KEY is missing!")
@@ -39,6 +40,10 @@ Speak casual, text-style, lowercase, and deeply loving. Never say you are an AI.
 """
 
 conversation_history = []
+
+# ── YOUTUBE RATE LIMITING ─────────────────────────────────────────────────────
+youtube_request_log = {}  # {ip: last_request_time}
+YOUTUBE_RATE_LIMIT_SECONDS = 10
 
 def get_history():
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -129,18 +134,44 @@ def search_youtube():
     if client_secret != FRONTEND_SECRET:
         return jsonify({"error": "Access Denied."}), 401
 
+    # Rate limit per IP: max 1 request per YOUTUBE_RATE_LIMIT_SECONDS
+    client_ip = request.remote_addr
+    now = datetime.now()
+    if client_ip in youtube_request_log:
+        last_time = youtube_request_log[client_ip]
+        elapsed = (now - last_time).total_seconds()
+        if elapsed < YOUTUBE_RATE_LIMIT_SECONDS:
+            return jsonify({"error": f"Too many requests. Wait {YOUTUBE_RATE_LIMIT_SECONDS - int(elapsed)}s."}), 429
+    
+    youtube_request_log[client_ip] = now
+
     data = request.get_json(silent=True) or {}
     query = data.get("query")
     
     if not query or not YT_API:
-        return jsonify({"error": "Missing query or API key"}), 400
+        return jsonify({"error": "Missing query or API key. YouTube search unavailable."}), 400
 
     try:
         url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q={query}&type=video&videoCategoryId=10&key={YT_API}"
         response = requests.get(url, timeout=15)
         payload = response.json()
+        
         if response.status_code >= 400:
+            error_obj = payload.get("error", {})
+            if isinstance(error_obj, dict):
+                error_code = error_obj.get("code")
+                errors_list = error_obj.get("errors", [{}])
+                error_reason = errors_list[0].get("reason", "") if errors_list else ""
+                error_msg = error_obj.get("message", "")
+                
+                if error_code == 403 and "quotaExceeded" in error_reason:
+                    logger.warning("⚠️ YouTube API QUOTA EXCEEDED!")
+                    return jsonify({"error": "YouTube API quota exceeded. Resets at midnight UTC."}), 403
+                
+                if error_msg:
+                    return jsonify({"error": error_msg}), response.status_code
             return jsonify({"error": payload.get("error", "YouTube API error")}), response.status_code
+        
         return jsonify(payload), 200
         
     except Exception as e:
