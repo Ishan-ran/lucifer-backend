@@ -6,10 +6,6 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from groq import Groq
-try:
-    from youtubesearchpython import VideosSearch
-except Exception:
-    VideosSearch = None
 
 app = Flask(__name__)
 CORS(app)
@@ -113,7 +109,7 @@ def home():
 @app.route("/health", methods=["GET"])
 def health():
     groq_ready = bool(GROQ_API_KEY and client is not None)
-    youtube_ready = VideosSearch is not None
+    youtube_ready = True
     config_ready = bool(FRONTEND_SECRET and GUILD_PASSWORD)
 
     return jsonify({
@@ -170,7 +166,7 @@ def chat():
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
-    """Search YouTube without API keys using youtube-search-python."""
+    """Search YouTube without API keys."""
     client_secret = request.headers.get("X-Lucifer-Secret")
     if client_secret != FRONTEND_SECRET:
         return jsonify({"error": "Access Denied."}), 401
@@ -192,47 +188,12 @@ def search_youtube():
     if not query:
         return jsonify({"error": "Missing query."}), 400
 
-    if VideosSearch is None:
-        try:
-            items = fallback_youtube_search(query, limit=10)
-            return jsonify({"items": items}), 200
-        except Exception as fallback_error:
-            logger.error(f"YouTube fallback search error: {fallback_error}")
-            return jsonify({"error": f"YouTube search unavailable: {str(fallback_error)}"}), 503
-
     try:
-        search = VideosSearch(query, limit=10)
-        raw = search.result() or {}
-        results = raw.get("result", [])
-
-        items = []
-        for entry in results:
-            video_id = entry.get("id")
-            title = entry.get("title") or "Untitled"
-            channel = entry.get("channel") or {}
-            channel_name = channel.get("name") or "Unknown channel"
-
-            if not video_id:
-                continue
-
-            items.append({
-                "id": {"videoId": video_id},
-                "snippet": {
-                    "title": title,
-                    "channelTitle": channel_name
-                }
-            })
-
+        items = fallback_youtube_search(query, limit=10)
         return jsonify({"items": items}), 200
-        
-    except Exception as e:
-        logger.error(f"YouTube Search Error (primary): {e}")
-        try:
-            items = fallback_youtube_search(query, limit=10)
-            return jsonify({"items": items}), 200
-        except Exception as fallback_error:
-            logger.error(f"YouTube Search Error (fallback): {fallback_error}")
-            return jsonify({"error": f"Failed to search YouTube: {str(fallback_error)}"}), 502
+    except Exception as search_error:
+        logger.error(f"YouTube Search Error: {search_error}")
+        return jsonify({"error": f"Failed to search YouTube: {str(search_error)}"}), 502
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
