@@ -1,10 +1,13 @@
 import os
 import logging
-import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from groq import Groq, RateLimitError, APIStatusError
+from groq import Groq
+try:
+    from youtubesearchpython import VideosSearch
+except Exception:
+    VideosSearch = None
 
 app = Flask(__name__)
 CORS(app)
@@ -13,11 +16,10 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY") 
 FRONTEND_SECRET = os.environ.get("FRONTEND_SECRET")
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 GUILD_PASSWORD = os.environ.get("GUILD_PASSWORD")
-YT_API = os.environ.get("Youtube_api")
 
 if not GROQ_API_KEY:
     logger.warning("⚠️ GROQ_API_KEY is missing!")
@@ -72,7 +74,7 @@ def home():
 @app.route("/health", methods=["GET"])
 def health():
     groq_ready = bool(GROQ_API_KEY and client is not None)
-    youtube_ready = bool(YT_API)
+    youtube_ready = VideosSearch is not None
     config_ready = bool(FRONTEND_SECRET and GUILD_PASSWORD)
 
     return jsonify({
@@ -129,7 +131,7 @@ def chat():
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
-    """Securely search YouTube without exposing the API key to the frontend."""
+    """Search YouTube without API keys using youtube-search-python."""
     client_secret = request.headers.get("X-Lucifer-Secret")
     if client_secret != FRONTEND_SECRET:
         return jsonify({"error": "Access Denied."}), 401
@@ -148,35 +150,40 @@ def search_youtube():
     data = request.get_json(silent=True) or {}
     query = data.get("query")
     
-    if not query or not YT_API:
-        return jsonify({"error": "Missing query or API key. YouTube search unavailable."}), 400
+    if not query:
+        return jsonify({"error": "Missing query."}), 400
+
+    if VideosSearch is None:
+        return jsonify({"error": "YouTube search service unavailable."}), 503
 
     try:
-        url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q={query}&type=video&videoCategoryId=10&key={YT_API}"
-        response = requests.get(url, timeout=15)
-        payload = response.json()
-        
-        if response.status_code >= 400:
-            error_obj = payload.get("error", {})
-            if isinstance(error_obj, dict):
-                error_code = error_obj.get("code")
-                errors_list = error_obj.get("errors", [{}])
-                error_reason = errors_list[0].get("reason", "") if errors_list else ""
-                error_msg = error_obj.get("message", "")
-                
-                if error_code == 403 and "quotaExceeded" in error_reason:
-                    logger.warning("⚠️ YouTube API QUOTA EXCEEDED!")
-                    return jsonify({"error": "YouTube API quota exceeded. Resets at midnight UTC."}), 403
-                
-                if error_msg:
-                    return jsonify({"error": error_msg}), response.status_code
-            return jsonify({"error": payload.get("error", "YouTube API error")}), response.status_code
-        
-        return jsonify(payload), 200
+        search = VideosSearch(query, limit=10)
+        raw = search.result() or {}
+        results = raw.get("result", [])
+
+        items = []
+        for entry in results:
+            video_id = entry.get("id")
+            title = entry.get("title") or "Untitled"
+            channel = entry.get("channel") or {}
+            channel_name = channel.get("name") or "Unknown channel"
+
+            if not video_id:
+                continue
+
+            items.append({
+                "id": {"videoId": video_id},
+                "snippet": {
+                    "title": title,
+                    "channelTitle": channel_name
+                }
+            })
+
+        return jsonify({"items": items}), 200
         
     except Exception as e:
         logger.error(f"YouTube Search Error: {e}")
-        return jsonify({"error": "Failed to fetch from YouTube"}), 502
+        return jsonify({"error": "Failed to search YouTube"}), 502
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
